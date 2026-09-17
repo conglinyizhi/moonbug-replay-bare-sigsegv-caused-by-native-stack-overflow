@@ -1,0 +1,464 @@
+///|
+/// native 深递归栈溢出是裸 SIGSEGV —— 可执行规格
+///
+///   moon run cases.mbtx                 跑 bug + workaround + contrast lane（= verify）
+///   moon run cases.mbtx -- bug          命中问题 lane
+///   moon run cases.mbtx -- workaround   绕过 lane
+///   moon run cases.mbtx -- contrast     对照 lane（js 后端）
+///   moon run cases.mbtx -- fixed        修复验收 lane（上游修好后转 PASS）
+///   moon run cases.mbtx -- list         列出用例
+///   moon run cases.mbtx -- diagnose     打印环境、深度区间与用例表
+///
+/// 深度结论依赖栈上限：每个 lane 都应在 8 MiB 下跑（Makefile 里用 ulimit -s 8192 钉住）。
+/// 环境变量：MOON（moon 可执行文件，默认 $HOME/.moon/bin/moon）
+///           FIX_CC（编译 native 用的 C 编译器，默认 clang）
+import {
+  "moonbitlang/async@0.22.1",
+  "moonbitlang/async/process",
+  "moonbitlang/async/fs",
+  "moonbitlang/core/env",
+}
+
+///|
+extern "c" fn c_exit(code : Int) = "exit"
+
+///|
+struct Case {
+  name : String
+  lane : String
+  cmd : Array[String]
+  expect_exit : String
+  expect_stdout : String
+  expect_stderr : String
+  timeout_ms : Int
+  desc : String
+}
+
+///|
+fn all_cases() -> Array[Case] {
+  [
+    {
+      name: "deep-100k",
+      lane: "bug",
+      cmd: ["_build/native/debug/build/deep/deep.exe", "100000"],
+      expect_exit: "0",
+      expect_stdout: "nonempty",
+      expect_stderr: "empty",
+      timeout_ms: 60000,
+      desc: "10 万层正常跑完（深度不够，不触发）",
+    },
+    {
+      name: "deep-500k",
+      lane: "bug",
+      cmd: ["_build/native/debug/build/deep/deep.exe", "500000"],
+      expect_exit: "0",
+      expect_stdout: "nonempty",
+      expect_stderr: "empty",
+      timeout_ms: 60000,
+      desc: "50 万层仍正常跑完",
+    },
+    {
+      name: "deep-1m",
+      lane: "bug",
+      cmd: ["_build/native/debug/build/deep/deep.exe", "1000000"],
+      expect_exit: "139",
+      expect_stdout: "empty",
+      expect_stderr: "empty",
+      timeout_ms: 60000,
+      desc: "100 万层 → 裸 SIGSEGV，输出全丢",
+    },
+    {
+      name: "spin",
+      lane: "bug",
+      cmd: ["_build/native/debug/build/spin/spin.exe"],
+      expect_exit: "139",
+      expect_stdout: "empty",
+      expect_stderr: "empty",
+      timeout_ms: 60000,
+      desc: "无限递归 → 同样裸 SIGSEGV",
+    },
+    {
+      name: "deep-release-20m",
+      lane: "bug",
+      cmd: ["_build/native/release/build/deep/deep.exe", "20000000"],
+      expect_exit: "0",
+      expect_stdout: "nonempty",
+      expect_stderr: "empty",
+      timeout_ms: 120000,
+      desc: "release(AOT) 2000 万层跑完（疑似被优化成循环，未看汇编）",
+    },
+    {
+      name: "stderr-probe",
+      lane: "workaround",
+      cmd: ["_build/native/debug/build/stderr_probe/stderr_probe.exe"],
+      expect_exit: "139",
+      expect_stdout: "empty",
+      expect_stderr: "nonempty",
+      timeout_ms: 60000,
+      desc: "进度改走 fd 2：崩溃照旧，但崩前的信息留得住",
+    },
+    {
+      name: "js-10k",
+      lane: "contrast",
+      cmd: ["moon", "run", "deep", "--target", "js", "--", "10000"],
+      expect_exit: "nonzero",
+      expect_stdout: "nonempty",
+      expect_stderr: "contains:RangeError",
+      timeout_ms: 120000,
+      desc: "js 后端同深度：可读 RangeError + 源码位置，崩前输出保留",
+    },
+  ]
+}
+
+///|
+fn lane_cases(lane : String) -> Array[Case] {
+  all_cases().filter(c => c.lane == lane)
+}
+
+///|
+struct Result {
+  exit : Int
+  out_bytes : Int
+  err_bytes : Int
+  err_text : String
+  timed_out : Bool
+}
+
+///|
+fn env_or(key : String, fallback : String) -> String {
+  match @env.get_env_var(key) {
+    Some(v) => v
+    None => fallback
+  }
+}
+
+///|
+fn moon_exe() -> String {
+  env_or("MOON", env_or("HOME", "/root") + "/.moon/bin/moon")
+}
+
+///|
+fn fix_cc() -> String {
+  env_or("FIX_CC", "clang")
+}
+
+///|
+fn pad(s : String, width : Int) -> String {
+  if s.length() >= width {
+    s
+  } else {
+    s + " ".repeat(width - s.length())
+  }
+}
+
+///|
+fn tail_lines(text : String, keep : Int) -> String {
+  let lines = text.split("\n").collect()
+  let start = if lines.length() > keep { lines.length() - keep } else { 0 }
+  let buf = StringBuilder()
+  let mut i = start
+  while i < lines.length() {
+    buf.write_string("    ")
+    buf.write_string(lines[i].to_owned())
+    buf.write_string("\n")
+    i = i + 1
+  }
+  buf.to_string()
+}
+
+///|
+/// 把 cmd[0] == "moon" 换成真实路径，其余原样。
+fn argv_of(c : Case) -> Array[String] {
+  let out : Array[String] = []
+  for i, a in c.cmd {
+    out.push(if i == 0 && a == "moon" { moon_exe() } else { a })
+  }
+  out
+}
+
+///|
+fn is_all_digits(s : String) -> Bool {
+  let mut ok = s.length() > 0
+  for c in s {
+    if c < '0' || c > '9' {
+      ok = false
+    }
+  }
+  ok
+}
+
+///|
+fn int_of_digits(s : String) -> Int {
+  let mut n = 0
+  for c in s {
+    if c >= '0' && c <= '9' {
+      n = n * 10 + (c.to_int() - '0'.to_int())
+    }
+  }
+  n
+}
+
+///|
+/// 栈上限（KiB），从 /proc/self/limits 读软上限。深度结论依赖它。
+async fn stack_limit_kib() -> Int {
+  let text = try! ((@fs.read_file("/proc/self/limits")).text())
+  for line in text.split("\n") {
+    if line.contains("Max stack size") {
+      // 形如 "Max stack size            8388608   unlimited    bytes"，取第一个纯数字字段
+      for f in line.split(" ") {
+        let tok = f.to_owned()
+        if is_all_digits(tok) {
+          return int_of_digits(tok) / 1024
+        }
+      }
+    }
+  }
+  -1
+}
+
+///|
+/// @process 把「被信号杀死」记成负数（SIGSEGV → -11）；这里统一成 128+n（139），
+/// 跟 shell 的 $? 一致，断言与打印都用归一后的值。
+fn norm_exit(code : Int) -> Int {
+  if code < 0 {
+    128 + (-code)
+  } else {
+    code
+  }
+}
+
+///|
+/// 输出走文件重定向：一来拿得到确切字节数，二来出问题时有现场可查。
+async fn run_case(c : Case) -> Result {
+  let argv = argv_of(c)
+  let out_path = "_build/logs/" + c.name + ".stdout"
+  let err_path = "_build/logs/" + c.name + ".stderr"
+  let outcome = @async.with_timeout_opt(c.timeout_ms, async fn() {
+    @process.run(
+      argv[0],
+      argv[1:],
+      extra_env={ "MOON_CC": fix_cc() },
+      stdout=@process.redirect_to_file(out_path, create_mode=@fs.CreateOrTruncate),
+      stderr=@process.redirect_to_file(err_path, create_mode=@fs.CreateOrTruncate),
+    )
+  })
+  match outcome {
+    None => { exit: -1, out_bytes: 0, err_bytes: 0, err_text: "", timed_out: true }
+    Some(code) => {
+      let out_bytes = size_of(out_path)
+      let err_bytes = size_of(err_path)
+      {
+        exit: norm_exit(code),
+        out_bytes,
+        err_bytes,
+        err_text: if err_bytes > 0 { text_of(err_path) } else { "" },
+        timed_out: false,
+      }
+    }
+  }
+}
+
+///|
+async fn size_of(path : String) -> Int {
+  if @fs.exists(path) {
+    @fs.file_size(path).to_int()
+  } else {
+    0
+  }
+}
+
+///|
+async fn text_of(path : String) -> String {
+  try! ((@fs.read_file(path)).text())
+}
+
+///|
+fn exit_ok(expect : String, actual : Int) -> Bool {
+  match expect {
+    "0" => actual == 0
+    "139" => actual == 139
+    "nonzero" => actual != 0
+    _ => actual.to_string() == expect
+  }
+}
+
+///|
+fn stdout_ok(expect : String, r : Result) -> Bool {
+  match expect {
+    "empty" => r.out_bytes == 0
+    "nonempty" => r.out_bytes > 0
+    _ => true
+  }
+}
+
+///|
+fn stderr_ok(expect : String, r : Result) -> Bool {
+  match expect {
+    "empty" => r.err_bytes == 0
+    "nonempty" => r.err_bytes > 0
+    _ =>
+      if expect.has_prefix("contains:") {
+        r.err_text.contains(expect[9:])
+      } else {
+        true
+      }
+  }
+}
+
+///|
+/// fixed lane 的判定：不再「裸」崩。有诊断（stderr 非空）或不再以 139 收场都算修复。
+fn fixed_ok(r : Result) -> Bool {
+  r.exit != 139 || r.err_bytes > 0
+}
+
+///|
+async fn run_cases(label : String, selected : Array[Case], fixed_lane : Bool) -> Int {
+  println(label)
+  let mut fails = 0
+  for c in selected {
+    let r = run_case(c)
+    let ok = if fixed_lane {
+      fixed_ok(r)
+    } else {
+      exit_ok(c.expect_exit, r.exit) && stdout_ok(c.expect_stdout, r) && stderr_ok(c.expect_stderr, r)
+    }
+    let note = if ok { "PASS" } else { "FAIL" }
+    let exit_shown = if r.timed_out { "timeout" } else { r.exit.to_string() }
+    println(
+      "  \{pad(c.name, 18)} exit=\{pad(exit_shown, 8)} stdout=\{pad(r.out_bytes.to_string(), 8)} stderr=\{pad(r.err_bytes.to_string(), 8)} \{pad(note, 5)} \{c.desc}",
+    )
+    if !ok {
+      fails = fails + 1
+      let expect = if fixed_lane {
+        "不再裸崩（exit != 139 或 stderr 非空）"
+      } else {
+        "exit=\{c.expect_exit} stdout=\{c.expect_stdout} stderr=\{c.expect_stderr}"
+      }
+      println("         期望 \{expect}")
+      if r.err_bytes > 0 {
+        println(tail_lines(r.err_text, 3))
+      }
+    }
+  }
+  fails
+}
+
+///|
+fn list_cases() -> Unit {
+  println("\{pad("CASE", 19)} \{pad("LANE", 11)} \{pad("EXIT", 8)} \{pad("STDOUT", 9)} \{pad("STDERR", 22)} 说明")
+  for c in all_cases() {
+    println(
+      "\{pad(c.name, 19)} \{pad(c.lane, 11)} \{pad(c.expect_exit, 8)} \{pad(c.expect_stdout, 9)} \{pad(c.expect_stderr, 22)} \{c.desc}",
+    )
+  }
+}
+
+///|
+async fn moon_version() -> String {
+  let (_, out, _) = @process.collect_output(moon_exe(), ["version"])
+  out.text()
+}
+
+///|
+async fn prepare() -> Bool {
+  let steps = [
+    ["build", "--target", "native", "deep", "spin", "stderr_probe"],
+    ["build", "--release", "--strip", "--target", "native", "deep"],
+    ["build", "--target", "js", "deep"],
+  ]
+  let mut ok = true
+  for step in steps {
+    let (code, _, err) = @process.collect_output(
+      moon_exe(),
+      step,
+      extra_env={ "MOON_CC": fix_cc() },
+    )
+    if code != 0 {
+      println("prepare 失败：moon \{step.join(" ")} → exit=\{code}")
+      println("提示：native 编译需要 C 编译器，默认按 FIX_CC=clang 传给 MOON_CC。")
+      println(tail_lines(err.text(), 8))
+      ok = false
+    }
+  }
+  ok
+}
+
+///|
+async fn diagnose() -> Unit {
+  println("moon      : \{moon_exe()}")
+  println("            \{moon_version()}")
+  println("栈上限    : \{stack_limit_kib()} KiB（探针按这个上限给深度结论）")
+  println("用例      :")
+  let mut i = 0
+  for c in all_cases() {
+    println("    \{pad(c.name, 18)} \{c.cmd.join(" ")}")
+    i = i + 1
+  }
+  println("--- 深度区间（8 MiB 栈）---")
+  println("    10 万层 / 50 万层正常；55 万层起 SIGSEGV；100 万层必崩（基线用例取 1M 这一端）")
+}
+
+///|
+async fn dispatch(cmd : String) -> Int {
+  match cmd {
+    "bug" =>
+      run_cases(
+        "命中问题 lane —— native 深递归期望裸 SIGSEGV（exit 139，stdout/stderr 空）",
+        lane_cases("bug"),
+        false,
+      )
+    "workaround" =>
+      run_cases("绕过 lane —— 崩溃前的进度改走 fd 2，期望留得住", lane_cases("workaround"), false)
+    "contrast" =>
+      run_cases("对照 lane —— js 后端同深度给可读诊断", lane_cases("contrast"), false)
+    "fixed" =>
+      run_cases(
+        "修复验收 lane —— 期望不再裸崩（上游修好后转 PASS）",
+        all_cases().filter(c => c.name == "deep-1m"),
+        true,
+      )
+    "verify" => {
+      let a = run_cases(
+        "命中问题 lane —— native 深递归期望裸 SIGSEGV（exit 139，stdout/stderr 空）",
+        lane_cases("bug"),
+        false,
+      )
+      let b = run_cases("绕过 lane —— 崩溃前的进度改走 fd 2，期望留得住", lane_cases("workaround"), false)
+      let c = run_cases("对照 lane —— js 后端同深度给可读诊断", lane_cases("contrast"), false)
+      if a + b + c == 0 {
+        println("== 三条 lane 全部通过 ==")
+      } else {
+        println("== 有失败：\{a + b + c} 条 ==")
+      }
+      a + b + c
+    }
+    _ => {
+      println("未知子命令：\{cmd}")
+      println("可用：bug | workaround | contrast | fixed | list | diagnose（不带参数 = verify）")
+      2
+    }
+  }
+}
+
+///|
+async fn main {
+  let args = @env.args()
+  let cmd = if args.length() > 1 { args[1] } else { "verify" }
+  if !@fs.exists("_build/logs") {
+    @fs.mkdir("_build/logs", recursive=true)
+  }
+  let fails = match cmd {
+    "list" => {
+      list_cases()
+      0
+    }
+    "diagnose" => {
+      diagnose()
+      0
+    }
+    "bug" | "workaround" | "contrast" | "fixed" | "verify" =>
+      if prepare() { dispatch(cmd) } else { 2 }
+    _ => dispatch(cmd)
+  }
+  c_exit(if fails == 0 { 0 } else { 1 })
+}
