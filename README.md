@@ -32,10 +32,11 @@ native 侧崩溃时 `stderr` 是 0 字节，差距就在这：一方指出源码
 
 ### 复现平台
 
-| 平台 | moon 版本 | 结果 |
+| 平台 | 工具链 | 结果 |
 | --- | --- | --- |
-| 本机 Linux x86-64（8 MiB 栈） | 0.1.20260916（e4f45e4，2026-09-16，nightly） | 复现（`make bug` 绿） |
-| GitHub Actions `ubuntu-latest`（栈上限也是 8192 KiB） | 0.1.20260915（2e1a46d，2026-09-15，`latest` 频道） | 复现（[run 35218999840](https://github.com/conglinyizhi/moonbug-replay-bare-sigsegv-caused-by-native-stack-overflow/actions/runs/35218999840)：三条 lane 全绿，各用例字节数与本机一致） |
+| 本机 Linux x86-64（8 MiB 栈） | `moon 0.1.20260916 (e4f45e4)`，nightly 频道 | 复现（`make bug` 绿） |
+| GitHub Actions `ubuntu-latest` | `moon 0.1.20260915 (2e1a46d)`，latest 频道 | 复现（[run 35218999840](https://github.com/conglinyizhi/moonbug-replay-bare-sigsegv-caused-by-native-stack-overflow/actions/runs/35218999840)：各用例字节数与本机逐格一致） |
+| GitHub Actions `ubuntu-latest` | `moon 0.1.20260916 (e4f45e4)`，nightly 频道（与本机同版本） | 复现（[run 35219990487](https://github.com/conglinyizhi/moonbug-replay-bare-sigsegv-caused-by-native-stack-overflow/actions/runs/35219990487)：`deep-1m` 同样 `exit=139 stdout=0 stderr=0`） |
 
 ## 2. 快速复现
 
@@ -153,7 +154,12 @@ make deps        # 同步 registry 索引（首次运行需要，各 lane 会自
 三条 lane 全绿，`upstream-fix-status` 是 failure 但 workflow 结论仍是 success。
 runner 上 `deep-100k/500k` 的 stdout 都是 38 B、`deep-1m` 是 `exit=139 stdout=0 stderr=0`、`release-20m` 是 42 B，
 与本机逐格一致；runner 的栈上限也是 8192 KiB（`make diagnose` 会打印）。
-装到的是 `moon 0.1.20260915 (2e1a46d 2026-09-15)`，本机是 09-16 的 nightly。
+装到的是 `moon 0.1.20260915 (2e1a46d 2026-09-15)`，与本机不同版本，结论一致。
+
+`nightly` 那轮（[run 35219990487](https://github.com/conglinyizhi/moonbug-replay-bare-sigsegv-caused-by-native-stack-overflow/actions/runs/35219990487)）：
+在干净的 runner 上装到的就是本机那个 `moon 0.1.20260916 (e4f45e4 2026-09-16)`
+（`moonc v0.10.13+75bd53fc8-nightly`、`moonrun 0.1.20260916`），栈上限同样 8192 KiB，
+`deep-100k/500k/1m/spin/release-20m` 五个用例的退出码与输出字节数与本机逐格相同。
 
 ### 注意
 
@@ -168,13 +174,14 @@ runner 上 `deep-100k/500k` 的 stdout 都是 38 B、`deep-1m` 是 `exit=139 std
 
 ```
 # 本机（本文所有数字的来源）
-moon 0.1.20260916 (e4f45e4 2026-09-16)      # nightly
+moon 0.1.20260916 (e4f45e4 2026-09-16)      # nightly 频道
 moonc v0.10.13+75bd53fc8-nightly (2026-09-15)
 Linux x86-64（内核 7.2.3-arch1-3），clang 22.1.8，node v26.8.1
 ulimit -s = 8192 KiB（8 MiB）
 
-# CI（ubuntu-latest，run 35218999840）
-moon 0.1.20260915 (2e1a46d 2026-09-15)      # latest 频道
+# CI（ubuntu-latest）
+moon 0.1.20260915 (2e1a46d 2026-09-15)      # latest 频道（run 35218999840）
+moon 0.1.20260916 (e4f45e4 2026-09-16)      # nightly 频道（run 35219990487，与本机同版本）
 ulimit -s = 8192 KiB（规格打印的栈上限）
 ```
 
