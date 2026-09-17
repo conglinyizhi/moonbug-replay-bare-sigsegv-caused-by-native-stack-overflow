@@ -354,8 +354,9 @@ fn list_cases() -> Unit {
 }
 
 ///|
+/// 多行：moon / moonc / moonrun / feature flags —— 报 bug 时这几个版本都要
 async fn moon_version() -> String {
-  let (_, out, _) = @process.collect_output(moon_exe(), ["version"])
+  let (_, out, _) = @process.collect_output(moon_exe(), ["version", "--all"])
   out.text()
 }
 
@@ -386,7 +387,12 @@ async fn prepare() -> Bool {
 ///|
 async fn diagnose() -> Unit {
   println("moon      : \{moon_exe()}")
-  println("            \{moon_version()}")
+  println("工具链    :")
+  for line in moon_version().split("\n") {
+    if line.length() > 0 {
+      println("    \{line}")
+    }
+  }
   println("栈上限    : \{stack_limit_kib()} KiB（探针按这个上限给深度结论）")
   println("用例      :")
   let mut i = 0
