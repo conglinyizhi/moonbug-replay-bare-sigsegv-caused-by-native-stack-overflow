@@ -95,9 +95,11 @@ MOON_CC=clang moon run --target native cases.mbtx -- bug
 | 无限递归 | `spin.exe` | **139** | **0 B** | **0 B** |
 | release 2000 万层 | `deep.exe 20000000`（`--release --strip`） | 0 | 42 B | 0 B |
 | 进度写 fd 2 | `stderr_probe.exe` | **139** | **0 B** | 35 B |
-| js 后端 1 万层（对照） | `moon run deep --target js -- 10000` | 1 | 18 B | 1453 B（`RangeError` + 源码位置） |
+| js 后端 1 万层（对照） | `moon run deep --target js -- 10000` | 1 | 18 B | 705–1453 B（`RangeError` + 源码位置） |
 
 即：native 崩的时候什么都不吐，js 后端同样深度给行号。
+（js 那行的 stderr 字节数随 clone 路径长度浮动：Node 的堆栈会重复打印文件路径，同一台机器换路径就能差出几百字节，
+本机两次实测 705 B 与 1453 B；基线只比诊断文本与源码位置要求，不比字节数。）
 
 ### 可执行规格
 
@@ -140,6 +142,8 @@ make deps        # 同步 registry 索引（首次运行需要，各 lane 会自
 ### 注意
 
 - **栈上限必须钉住**：`Makefile` 里每个 lane 都以 `ulimit -s 8192; ulimit -c 0` 起跑，深度结论只在这个上限下成立。
+  这不是保守：同一份二进制、同样 100 万层，8 MiB 栈下 `exit=139`，64 MiB 栈下 `exit=0`（跑完了）。
+  栈上限不是 8192 KiB 时规格会先打一行警告；`make diagnose` 也会打印当前值。
 - `@process.run` 把「被信号杀死」记成负数（SIGSEGV → `-11`），规格里 `norm_exit` 统一折算成 `128+n`，跟 shell 的 `$?` 一致。
 - core dump 即使设了 `ulimit -c 0` 也可能被 systemd-coredump 的 pipe 模式收走，清理用 `sudo coredumpctl vacuum --size=50M`。
 - js 对照需要 `node`；`moon run --target js` 的构建也在 `prepare()` 里做了。
