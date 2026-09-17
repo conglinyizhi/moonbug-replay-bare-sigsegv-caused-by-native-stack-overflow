@@ -192,10 +192,17 @@ ulimit -s = 8192 KiB（规格打印的栈上限）
 
 ### 相关上游 issue
 
-native 后端（codegen + runtime）在 [moonbitlang/moonbit-compiler](https://github.com/moonbitlang/moonbit-compiler)，
-但那个仓库的 **issues 是关闭的**（`has_issues = false`，2026-09-17 查）。搜 `stack overflow` / `SIGSEGV`：
-moonbit-compiler 里 0 命中；`moonbitlang/moon` 里只有 #1101（`cc-flags` 导致的 segfault，已修）与
-#969（tcc 下重复符号），都不是同一件事。所以这条要报哪里还需要先定 —— 这个问题本身是「缺诊断」，不是断言。
+已投 **[moonbitlang/moon#2228](https://github.com/moonbitlang/moon/issues/2228)**
+（`native: stack overflow exits with a bare SIGSEGV — no diagnostic, and buffered stdout is lost`，
+2026-09-17 开，带 `bug` + `pending-triage` 标签）。native 后端的用户报告历来也报在这里，并有人跟进。
+
+为什么不报别处：native 后端（codegen + runtime）的真源码在
+[moonbitlang/moonbit-compiler](https://github.com/moonbitlang/moonbit-compiler)，但那个仓库的 **issues 是关闭的**
+（`has_issues = false`，2026-09-17 查）；另有运行时镜像仓
+[moonbitlang/moonbit-native-runtime](https://github.com/moonbitlang/moonbit-native-runtime)，
+README 写明欢迎 bug 报告，但历史上只有 1 条 PR，属低流量镜像。搜 `stack overflow` / `SIGSEGV`：
+moonbit-compiler 里 0 命中，`moonbitlang/moon` 里只有 #1101（`cc-flags` 导致的 segfault）与
+#969（tcc 下重复符号），都不是同一件事。
 
 ### 姊妹仓库
 
