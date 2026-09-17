@@ -6,6 +6,7 @@
 //
 //   ./deep.exe 1000000     实测 exit 139（SIGSEGV），stdout/stderr 全空
 //   moon run deep --target js -- 10000   实测 RangeError + 源码位置
+
 ///|
 fn digits_to_int(s : String) -> Int? {
   if s.length() == 0 {

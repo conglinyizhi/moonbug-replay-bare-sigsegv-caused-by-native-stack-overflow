@@ -4,6 +4,7 @@
 // 同一份进度写 fd 2 就留得住 —— 崩溃本身绕不开，但「崩了之后什么都看不到」能绕开。
 //
 // 实测：exit 139，stdout 0 字节，stderr 有内容。
+
 ///|
 #borrow(buf)
 extern "c" fn c_write(fd : Int, buf : Bytes, len : Int) -> Int = "write"
