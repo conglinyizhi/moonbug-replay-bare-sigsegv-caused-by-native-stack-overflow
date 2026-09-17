@@ -400,6 +400,15 @@ async fn diagnose() -> Unit {
 
 ///|
 async fn dispatch(cmd : String) -> Int {
+  // 深度结论依赖栈上限：不是 8192 KiB 时先大声提醒，免得把飘掉的结果当成真结论
+  let limit = stack_limit_kib()
+  if limit > 0 && limit != 8192 {
+    println(
+      "警告：当前栈上限 \{limit} KiB ≠ 8192 KiB —— 深度结论会飘（实测同样 100 万层：8 MiB 栈崩、64 MiB 栈跑完）",
+    )
+    println("      请用 make <lane> 跑，Makefile 里钉住了 ulimit -s 8192。")
+    println("")
+  }
   match cmd {
     "bug" =>
       run_cases(
