@@ -95,11 +95,11 @@ MOON_CC=clang moon run --target native cases.mbtx -- bug
 | 无限递归 | `spin.exe` | **139** | **0 B** | **0 B** |
 | release 2000 万层 | `deep.exe 20000000`（`--release --strip`） | 0 | 42 B | 0 B |
 | 进度写 fd 2 | `stderr_probe.exe` | **139** | **0 B** | 35 B |
-| js 后端 1 万层（对照） | `moon run deep --target js -- 10000` | 1 | 18 B | 705–1453 B（`RangeError` + 源码位置） |
+| js 后端 1 万层（对照） | `moon run deep --target js -- 10000` | 1 | 18 B | 595–1453 B（`RangeError` + 源码位置） |
 
 即：native 崩的时候什么都不吐，js 后端同样深度给行号。
 （js 那行的 stderr 字节数随 clone 路径长度浮动：Node 的堆栈会重复打印文件路径，同一台机器换路径就能差出几百字节，
-本机两次实测 705 B 与 1453 B；基线只比诊断文本与源码位置要求，不比字节数。）
+本机三次实测 595 B（`/tmp/final-b`）、705 B、1453 B（长路径）；基线只比诊断文本与源码位置，不比字节数。）
 
 ### 可执行规格
 
